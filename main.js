@@ -1,16 +1,17 @@
 const { jsPDF } = window.jspdf;
 
 let scanner = null;
-let sourceImage = null;          // loaded HTMLImageElement
-let processedImageDataUrl = null;
-let corners = null;              // {topLeftCorner, topRightCorner, bottomLeftCorner, bottomRightCorner}
-let dragging = null;             // key of corner currently being dragged
+
+// Each item: { id, img, corners, editorScale, active }
+const pages = [];
+let activeId = null;
+let dragging = null;
 
 const uploadInput = document.getElementById("upload");
 const downloadBtn = document.getElementById("download");
-const extractBtn = document.getElementById("extract");
 const filterSelect = document.getElementById("filter");
 const statusEl = document.getElementById("status");
+const thumbsEl = document.getElementById("thumbs");
 const editorWrap = document.getElementById("editorWrap");
 const editor = document.getElementById("editor");
 const ctx = editor.getContext("2d");
@@ -30,7 +31,6 @@ window.addEventListener("load", () => {
   scanner = new window.jscanify();
 
   uploadInput.addEventListener("change", handleUpload);
-  extractBtn.addEventListener("click", handleExtract);
   downloadBtn.addEventListener("click", handleDownload);
 
   editor.addEventListener("pointerdown", onPointerDown);
@@ -38,90 +38,175 @@ window.addEventListener("load", () => {
   editor.addEventListener("pointerup", onPointerUp);
   editor.addEventListener("pointercancel", onPointerUp);
 
-  setStatus("Ready. Choose an image.");
+  setStatus("Ready. Choose one or more images.");
 });
 
-// ---------- Upload + preview + auto corners ----------
-function handleUpload(e) {
-  const file = e.target.files[0];
-  if (!file) return;
+// ---------- Upload multiple files ----------
+async function handleUpload(e) {
+  const files = Array.from(e.target.files || []);
+  if (!files.length) return;
 
-  setStatus("Loading image...");
-  processedImageDataUrl = null;
-  downloadBtn.disabled = true;
-  extractBtn.disabled = true;
-  corners = null;
+  setStatus(`Loading ${files.length} image(s)...`);
 
-  const reader = new FileReader();
-  reader.onload = (event) => {
+  for (const file of files) {
+    try {
+      const dataUrl = await readFileAsDataURL(file);
+      const img = await loadImage(dataUrl);
+      const id = Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+
+      // Auto-detect corners
+      const corners = autoDetectCorners(img);
+
+      pages.push({ id, img, corners, active: false });
+    } catch (err) {
+      console.error("Failed to load", file.name, err);
+    }
+  }
+
+  renderThumbs();
+
+  // Activate the last added page
+  if (pages.length) {
+    activatePage(pages[pages.length - 1].id);
+  }
+
+  downloadBtn.disabled = pages.length === 0;
+  setStatus(`${pages.length} page(s) loaded. Click a thumbnail to edit its corners.`);
+  uploadInput.value = ""; // allow re-uploading the same files
+}
+
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+}
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
     const img = new Image();
-    img.onload = () => {
-      sourceImage = img;
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = src;
+  });
+}
 
-      const maxW = 900;
-      const scale = Math.min(1, maxW / img.width);
-      editor.width = Math.round(img.width * scale);
-      editor.height = Math.round(img.height * scale);
-      editorWrap.style.display = "block";
-      ctx.drawImage(img, 0, 0, editor.width, editor.height);
-
-      // Suggest corners via jscanify, fall back to full-image corners
-      try {
-        const contour = scanner.findPaperContour(img);
-        if (contour) {
-          const pts = scanner.getCornerPoints(contour);
-          if (pts) {
-            const s = editor.width / img.width;
-            corners = {
-              topLeftCorner:     scalePoint(pts.topLeftCorner, s),
-              topRightCorner:    scalePoint(pts.topRightCorner, s),
-              bottomLeftCorner:  scalePoint(pts.bottomLeftCorner, s),
-              bottomRightCorner: scalePoint(pts.bottomRightCorner, s),
-            };
-          }
-        }
-      } catch (err) {
-        console.warn("Auto-detection failed:", err);
-      }
-
-      if (!corners) {
-        corners = {
-          topLeftCorner:     { x: 0, y: 0 },
-          topRightCorner:    { x: editor.width, y: 0 },
-          bottomLeftCorner:  { x: 0, y: editor.height },
-          bottomRightCorner: { x: editor.width, y: editor.height },
-        };
-        setStatus("Auto-detect failed — using full image corners. Drag to adjust.");
-      } else {
-        setStatus("Drag the corners if needed, then click Extract.");
-      }
-
-      drawEditor();
-      extractBtn.disabled = false;
-    };
-    img.onerror = () => setStatus("Could not load the image.", true);
-    img.src = event.target.result;
+// ---------- Auto-detect corners ----------
+function autoDetectCorners(img) {
+  // Default: full image
+  const full = {
+    topLeftCorner:     { x: 0, y: 0 },
+    topRightCorner:    { x: img.width, y: 0 },
+    bottomLeftCorner:  { x: 0, y: img.height },
+    bottomRightCorner: { x: img.width, y: img.height },
   };
-  reader.readAsDataURL(file);
+
+  try {
+    const contour = scanner.findPaperContour(img);
+    if (!contour) return full;
+
+    const pts = scanner.getCornerPoints(contour);
+    if (!pts || !pts.topLeftCorner) return full;
+
+    return {
+      topLeftCorner:     { ...pts.topLeftCorner },
+      topRightCorner:    { ...pts.topRightCorner },
+      bottomLeftCorner:  { ...pts.bottomLeftCorner },
+      bottomRightCorner: { ...pts.bottomRightCorner },
+    };
+  } catch (err) {
+    console.warn("Auto-detect failed:", err);
+    return full;
+  }
 }
 
-function scalePoint(p, s) {
-  return { x: p.x * s, y: p.y * s };
+// ---------- Thumbnails ----------
+function renderThumbs() {
+  thumbsEl.innerHTML = "";
+
+  pages.forEach((page, idx) => {
+    const div = document.createElement("div");
+    div.className = "thumb" + (page.id === activeId ? " active" : "");
+    div.dataset.id = page.id;
+
+    const imgEl = document.createElement("img");
+    imgEl.src = page.img.src;
+    div.appendChild(imgEl);
+
+    const remove = document.createElement("button");
+    remove.className = "remove";
+    remove.textContent = "×";
+    remove.title = "Remove this page";
+    remove.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      removePage(page.id);
+    });
+    div.appendChild(remove);
+
+    const caption = document.createElement("div");
+    caption.className = "caption";
+    caption.textContent = `Page ${idx + 1}`;
+    div.appendChild(caption);
+
+    div.addEventListener("click", () => activatePage(page.id));
+    thumbsEl.appendChild(div);
+  });
 }
 
-// ---------- Editor drawing ----------
+function activatePage(id) {
+  activeId = id;
+  const page = pages.find((p) => p.id === id);
+  if (!page) {
+    editorWrap.style.display = "none";
+    return;
+  }
+
+  // Draw into editor at reasonable size
+  const maxW = 900;
+  const scale = Math.min(1, maxW / page.img.width);
+  editor.width = Math.round(page.img.width * scale);
+  editor.height = Math.round(page.img.height * scale);
+  page.editorScale = scale; // editor pixels per source pixel
+
+  editorWrap.style.display = "block";
+
+  renderThumbs();
+  drawEditor();
+}
+
+function removePage(id) {
+  const idx = pages.findIndex((p) => p.id === id);
+  if (idx === -1) return;
+  pages.splice(idx, 1);
+
+  if (activeId === id) {
+    activeId = pages.length ? pages[Math.max(0, idx - 1)].id : null;
+    if (activeId) activatePage(activeId);
+    else editorWrap.style.display = "none";
+  } else {
+    renderThumbs();
+  }
+
+  downloadBtn.disabled = pages.length === 0;
+  setStatus(`${pages.length} page(s).`);
+}
+
+// ---------- Editor ----------
 function drawEditor() {
-  if (!sourceImage) return;
+  const page = pages.find((p) => p.id === activeId);
+  if (!page) return;
+
   ctx.clearRect(0, 0, editor.width, editor.height);
-  ctx.drawImage(sourceImage, 0, 0, editor.width, editor.height);
+  ctx.drawImage(page.img, 0, 0, editor.width, editor.height);
 
-  if (!corners) return;
-
+  const s = page.editorScale;
   const pts = [
-    corners.topLeftCorner,
-    corners.topRightCorner,
-    corners.bottomRightCorner,
-    corners.bottomLeftCorner,
+    scalePoint(page.corners.topLeftCorner, s),
+    scalePoint(page.corners.topRightCorner, s),
+    scalePoint(page.corners.bottomRightCorner, s),
+    scalePoint(page.corners.bottomLeftCorner, s),
   ];
 
   ctx.strokeStyle = "rgba(0, 140, 255, 0.9)";
@@ -143,12 +228,20 @@ function drawEditor() {
   });
 }
 
+function scalePoint(p, s) {
+  return { x: p.x * s, y: p.y * s };
+}
+
 // ---------- Drag handling ----------
 function onPointerDown(ev) {
-  if (!corners) return;
+  const page = pages.find((p) => p.id === activeId);
+  if (!page) return;
+
   const p = canvasPoint(ev);
-  for (const key of Object.keys(corners)) {
-    const cp = corners[key];
+  const s = page.editorScale;
+
+  for (const key of Object.keys(page.corners)) {
+    const cp = scalePoint(page.corners[key], s);
     if (Math.hypot(cp.x - p.x, cp.y - p.y) <= HANDLE_RADIUS + 6) {
       dragging = key;
       try { editor.setPointerCapture(ev.pointerId); } catch (_) {}
@@ -159,11 +252,17 @@ function onPointerDown(ev) {
 
 function onPointerMove(ev) {
   if (!dragging) return;
+  const page = pages.find((p) => p.id === activeId);
+  if (!page) return;
+
   const p = canvasPoint(ev);
-  corners[dragging] = {
-    x: Math.max(0, Math.min(editor.width, p.x)),
-    y: Math.max(0, Math.min(editor.height, p.y)),
-  };
+  const s = page.editorScale;
+
+  // Convert editor coords back to source image coords
+  const srcX = Math.max(0, Math.min(page.img.width,  p.x / s));
+  const srcY = Math.max(0, Math.min(page.img.height, p.y / s));
+
+  page.corners[dragging] = { x: srcX, y: srcY };
   drawEditor();
 }
 
@@ -182,44 +281,69 @@ function canvasPoint(ev) {
   };
 }
 
-// ---------- Extract using the user's corners ----------
-function handleExtract() {
-  if (!sourceImage || !corners) return;
+// ---------- Multi-page PDF ----------
+function handleDownload() {
+  if (!pages.length) return;
 
-  setStatus("Extracting...");
-  processedImageDataUrl = null;
-  downloadBtn.disabled = true;
+  setStatus("Building PDF...");
 
   try {
-    const s = sourceImage.width / editor.width;
-    const customCorners = {
-      topLeftCorner:     scalePoint(corners.topLeftCorner, s),
-      topRightCorner:    scalePoint(corners.topRightCorner, s),
-      bottomLeftCorner:  scalePoint(corners.bottomLeftCorner, s),
-      bottomRightCorner: scalePoint(corners.bottomRightCorner, s),
-    };
+    const mode = filterSelect.value || "gray";
+    let pdf = null;
 
-    const resultCanvas = scanner.extractPaper(
-      sourceImage,
-      sourceImage.width,
-      sourceImage.height,
-      customCorners
-    );
+    pages.forEach((page, idx) => {
+      const resultCanvas = scanner.extractPaper(
+        page.img,
+        page.img.width,
+        page.img.height,
+        page.corners
+      );
 
-    if (!resultCanvas) {
-      setStatus("Extraction failed.", true);
+      if (!resultCanvas) {
+        console.warn(`Page ${idx + 1}: extraction returned null, skipping.`);
+        return;
+      }
+
+      const filtered = applyScanFilter(resultCanvas, mode);
+      const dataUrl = filtered.toDataURL("image/jpeg", 0.92);
+
+      if (!pdf) {
+        pdf = new jsPDF({ orientation: "portrait", unit: "px", format: "a4" });
+      } else {
+        pdf.addPage("a4", "portrait");
+      }
+
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const props = pdf.getImageProperties(dataUrl);
+      const ratio = Math.min(pageWidth / props.width, pageHeight / props.height);
+      const w = props.width * ratio;
+      const h = props.height * ratio;
+      const x = (pageWidth - w) / 2;
+      const y = (pageHeight - h) / 2;
+
+      pdf.addImage(dataUrl, "JPEG", x, y, w, h);
+    });
+
+    if (!pdf) {
+      setStatus("No pages could be processed.", true);
       return;
     }
 
-    const mode = filterSelect.value || "gray";
-    const filteredCanvas = applyScanFilter(resultCanvas, mode);
-    processedImageDataUrl = filteredCanvas.toDataURL("image/jpeg", 0.92);
+    const blob = pdf.output("blob");
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "scanned-document.pdf";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
 
-    downloadBtn.disabled = false;
-    setStatus("Extracted. Click Download PDF.");
+    setStatus(`PDF downloaded (${pages.length} page(s)).`);
   } catch (err) {
     console.error(err);
-    setStatus("Extraction failed. Check the console.", true);
+    setStatus("PDF generation failed. Check the console.", true);
   }
 }
 
@@ -262,41 +386,4 @@ function applyScanFilter(sourceCanvas, mode = "gray") {
 
   octx.putImageData(imageData, 0, 0);
   return out;
-}
-
-// ---------- PDF download ----------
-function handleDownload() {
-  if (!processedImageDataUrl) return;
-
-  try {
-    const pdf = new jsPDF({
-      orientation: "portrait",
-      unit: "px",
-      format: "a4",
-    });
-
-    const pageWidth = pdf.internal.pageSize.getWidth();
-    const pageHeight = pdf.internal.pageSize.getHeight();
-    const imgProps = pdf.getImageProperties(processedImageDataUrl);
-    const ratio = Math.min(pageWidth / imgProps.width, pageHeight / imgProps.height);
-    const w = imgProps.width * ratio;
-    const h = imgProps.height * ratio;
-
-    pdf.addImage(processedImageDataUrl, "JPEG", 0, 0, w, h);
-
-    const blob = pdf.output("blob");
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "scanned-document.pdf";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-
-    setStatus("PDF downloaded.");
-  } catch (err) {
-    console.error(err);
-    setStatus("PDF generation failed. Check console.", true);
-  }
 }
