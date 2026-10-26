@@ -1,24 +1,3 @@
-const { jsPDF } = window.jspdf;
-
-let processedImageDataUrl = null;
-let scanner = null;
-
-const uploadInput = document.getElementById("upload");
-const downloadBtn = document.getElementById("download");
-
-// Wait for OpenCV + jscanify to be fully ready
-window.addEventListener("load", () => {
-  // jscanify is exposed globally by its script tag
-  if (window.jscanify) {
-    scanner = new window.jscanify();
-  } else {
-    console.error("jscanify failed to load.");
-    return;
-  }
-
-  uploadInput.addEventListener("change", handleUpload);
-});
-
 function handleUpload(e) {
   const file = e.target.files[0];
   if (!file) return;
@@ -28,8 +7,6 @@ function handleUpload(e) {
     const img = new Image();
     img.onload = () => {
       try {
-        // extractPaper(image, width, height)
-        // You can adjust these dimensions; they control the output resolution
         const resultCanvas = scanner.extractPaper(img, 1200, 1600);
 
         if (!resultCanvas) {
@@ -37,10 +14,11 @@ function handleUpload(e) {
           return;
         }
 
-        // Convert the scanned canvas to a data URL for jsPDF
-        processedImageDataUrl = resultCanvas.toDataURL("image/jpeg", 0.92);
+        // 🔑 Apply the "scanned" filter here
+        const filteredCanvas = applyScanFilter(resultCanvas, "bw"); // try "gray" or "bw"
+
+        processedImageDataUrl = filteredCanvas.toDataURL("image/jpeg", 0.92);
         downloadBtn.disabled = false;
-        console.log("Paper extracted successfully.");
       } catch (err) {
         console.error("Scanning failed:", err);
         alert("Scanning failed. Check the console for details.");
@@ -51,24 +29,59 @@ function handleUpload(e) {
   reader.readAsDataURL(file);
 }
 
-downloadBtn.addEventListener("click", () => {
-  if (!processedImageDataUrl) return;
+/**
+ * Apply a scanner-like filter to a canvas.
+ * mode: "original" | "gray" | "bw"
+ */
+function applyScanFilter(sourceCanvas, mode = "bw") {
+  const w = sourceCanvas.width;
+  const h = sourceCanvas.height;
 
-  const pdf = new jsPDF({
-    orientation: "portrait",
-    unit: "px",
-    format: "a4",
-  });
+  const out = document.createElement("canvas");
+  out.width = w;
+  out.height = h;
+  const ctx = out.getContext("2d");
+  ctx.drawImage(sourceCanvas, 0, 0);
 
-  const pageWidth = pdf.internal.pageSize.getWidth();
-  const pageHeight = pdf.internal.pageSize.getHeight();
+  if (mode === "original") return out;
 
-  // Fit image to page while keeping aspect ratio (optional, but looks better)
-  const imgProps = pdf.getImageProperties(processedImageDataUrl);
-  const ratio = Math.min(pageWidth / imgProps.width, pageHeight / imgProps.height);
-  const w = imgProps.width * ratio;
-  const h = imgProps.height * ratio;
+  const imageData = ctx.getImageData(0, 0, w, h);
+  const data = imageData.data;
 
-  pdf.addImage(processedImageDataUrl, "JPEG", 0, 0, w, h);
-  pdf.save("scanned-document.pdf");
-});
+  // Optional: compute average brightness to auto-tune threshold
+  let totalLuma = 0;
+
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+
+    // Luminance (perceptual)
+    const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+    totalLuma += luma;
+
+    if (mode === "gray") {
+      // Boost contrast around mid-gray for a cleaner "scan" look
+      const boosted = Math.min(255, Math.max(0, (luma - 128) * 1.4 + 128 + 30));
+      data[i] = data[i + 1] = data[i + 2] = boosted;
+    } else if (mode === "bw") {
+      // Store luma first, threshold in second pass
+      data[i] = data[i + 1] = data[i + 2] = luma;
+    }
+  }
+
+  if (mode === "bw") {
+    // Second pass: threshold to pure black/white
+    const avg = totalLuma / (data.length / 4);
+    // Slightly above average biases toward white background
+    const threshold = Math.min(200, Math.max(120, avg * 0.95));
+
+    for (let i = 0; i < data.length; i += 4) {
+      const v = data[i] > threshold ? 255 : 0;
+      data[i] = data[i + 1] = data[i + 2] = v;
+    }
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+  return out;
+}
