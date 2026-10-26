@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <!-- CSP must come BEFORE any script tags -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self';
+                 script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval' https://cdnjs.cloudflare.com https://docs.opencv.org https://cdn.jsdelivr.net;
+                 style-src 'self' 'unsafe-inline';
+                 img-src 'self' data: blob:;
+                 worker-src 'self' blob:;" />
+
+  <title>JPG to Scanned PDF</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 640px;
+      margin: 40px auto;
+      padding: 0 16px;
+    }
+    h1 { font-size: 1.4rem; }
+    label { display: block; margin: 16px 0 6px; font-weight: 600; }
+    input[type="file"], select, button {
+      padding: 8px 12px;
+      font-size: 1rem;
+      margin-top: 4px;
+    }
+    button { cursor: pointer; margin-top: 20px; }
+    button:disabled { cursor: not-allowed; opacity: 0.5; }
+    #status { margin-top: 12px; color: #555; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <h1>JPG → Scanned PDF</h1>
+
+  <label for="upload">Choose an image</label>
+  <input type="file" id="upload" accept="image/jpeg,image/png" />
+
+  <label for="filter">Filter</label>
+  <select id="filter">
+    <option value="gray">Grayscale (recommended)</option>
+    <option value="bw">Black &amp; White</option>
+    <option value="original">Original Color</option>
+  </select>
+
+  <br />
+  <button id="download" disabled>Download PDF</button>
+
+  <div id="status"></div>
+
+  <!-- jsPDF -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+  <!-- OpenCV.js (required by jscanify). async so it doesn't block page load -->
+  <script src="https://docs.opencv.org/4.7.0/opencv.js" async></script>
+
+  <!-- jscanify -->
+  <script src="https://cdn.jsdelivr.net/gh/ColonelParrot/jscanify@master/src/jscanify.min.js"></script>
+
+  <!-- Your app logic (module so imports stay scoped) -->
+  <script type="module" src="main.js"></script>
+</body>
+</html>
