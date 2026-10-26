@@ -17,7 +17,7 @@
   <style>
     body {
       font-family: system-ui, sans-serif;
-      max-width: 640px;
+      max-width: 720px;
       margin: 40px auto;
       padding: 0 16px;
     }
@@ -28,9 +28,21 @@
       font-size: 1rem;
       margin-top: 4px;
     }
-    button { cursor: pointer; margin-top: 20px; }
+    button { cursor: pointer; margin-top: 12px; }
     button:disabled { cursor: not-allowed; opacity: 0.5; }
     #status { margin-top: 12px; color: #555; font-size: 0.9rem; }
+    #editorWrap {
+      display: none;
+      position: relative;
+      margin-top: 16px;
+    }
+    #editor {
+      max-width: 100%;
+      border: 1px solid #ccc;
+      cursor: crosshair;
+      touch-action: none;
+      display: block;
+    }
   </style>
 </head>
 <body>
@@ -38,6 +50,12 @@
 
   <label for="upload">Choose an image</label>
   <input type="file" id="upload" accept="image/jpeg,image/png" />
+
+  <div id="editorWrap">
+    <canvas id="editor"></canvas>
+  </div>
+
+  <button id="extract" disabled>Extract with these corners</button>
 
   <label for="filter">Filter</label>
   <select id="filter">
