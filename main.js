@@ -41,14 +41,17 @@ async function handleUpload(e) {
   const files = Array.from(e.target.files || []);
   if (!files.length) return;
 
-  setStatus(`Loading ${files.length} image(s)...`);
+  setStatus(`Analyzing ${files.length} image(s)...`);
 
   for (const file of files) {
     try {
       const dataUrl = await readFileAsDataURL(file);
       const img = await loadImage(dataUrl);
       const id = Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+      
+      // Run both jscanify and our custom fallback
       const { corners, reliable } = autoDetectCorners(img);
+      
       pages.push({ id, img, corners, editorScale: 1, reliable });
     } catch (err) {
       console.error("Failed to load", file.name, err);
@@ -79,33 +82,129 @@ function loadImage(src) {
   });
 }
 
+// ---------- Advanced Auto-Detection ----------
 function autoDetectCorners(img) {
   const full = { topLeftCorner: { x: 0, y: 0 }, topRightCorner: { x: img.width, y: 0 }, bottomLeftCorner: { x: 0, y: img.height }, bottomRightCorner: { x: img.width, y: img.height } };
+  
+  if (typeof cv === "undefined") return { corners: full, reliable: false };
+
+  const mat = cv.imread(img); 
+  let pts = null;
+  
+  // 1. Try jscanify's native detection first (fast)
   try {
-    if (typeof cv === "undefined") return { corners: full, reliable: false };
-    const mat = cv.imread(img); 
-    let contour = null, pts = null;
-    try {
-      contour = scanner.findPaperContour(mat);
-      if (contour) pts = scanner.getCornerPoints(contour);
-    } finally {
-      mat.delete();
-      if (contour && contour.delete) contour.delete();
+    let contour = scanner.findPaperContour(mat);
+    if (contour) {
+      pts = scanner.getCornerPoints(contour);
+      contour.delete();
     }
-
-    if (!pts || !pts.topLeftCorner) return { corners: full, reliable: false };
-    const detected = { topLeftCorner: { ...pts.topLeftCorner }, topRightCorner: { ...pts.topRightCorner }, bottomLeftCorner: { ...pts.bottomLeftCorner }, bottomRightCorner: { ...pts.bottomRightCorner } };
-
-    const minX = Math.min(detected.topLeftCorner.x, detected.bottomLeftCorner.x);
-    const maxX = Math.max(detected.topRightCorner.x, detected.bottomRightCorner.x);
-    const minY = Math.min(detected.topLeftCorner.y, detected.topRightCorner.y);
-    const maxY = Math.max(detected.bottomLeftCorner.y, detected.bottomRightCorner.y);
-    const ratio = ((maxX - minX) * (maxY - minY)) / (img.width * img.height);
-    
-    return { corners: detected, reliable: ratio > 0.35 && ratio < 0.98 };
-  } catch (err) {
-    return { corners: full, reliable: false };
+  } catch (e) {
+    console.warn("jscanify native detection failed, switching to fallback.");
   }
+
+  // 2. If native failed, run our custom broad-search using OpenCV
+  if (!pts || !pts.topLeftCorner) {
+    try {
+      pts = fallbackDetectCorners(mat);
+    } catch (e) {
+      console.warn("Custom fallback detection failed.");
+    }
+  }
+
+  mat.delete();
+
+  if (!pts || !pts.topLeftCorner) return { corners: full, reliable: false };
+
+  const detected = { 
+    topLeftCorner: { ...pts.topLeftCorner }, 
+    topRightCorner: { ...pts.topRightCorner }, 
+    bottomLeftCorner: { ...pts.bottomLeftCorner }, 
+    bottomRightCorner: { ...pts.bottomRightCorner } 
+  };
+
+  // Quality check (ensure we didn't just select a tiny logo)
+  const minX = Math.min(detected.topLeftCorner.x, detected.bottomLeftCorner.x);
+  const maxX = Math.max(detected.topRightCorner.x, detected.bottomRightCorner.x);
+  const minY = Math.min(detected.topLeftCorner.y, detected.topRightCorner.y);
+  const maxY = Math.max(detected.bottomLeftCorner.y, detected.bottomRightCorner.y);
+  const ratio = ((maxX - minX) * (maxY - minY)) / (img.width * img.height);
+  
+  return { corners: detected, reliable: ratio > 0.35 && ratio < 0.98 };
+}
+
+// Custom Broad OpenCV Detection Pipeline
+function fallbackDetectCorners(srcMat) {
+  let gray = new cv.Mat();
+  let blurred = new cv.Mat();
+  let edges = new cv.Mat();
+  let dilated = new cv.Mat();
+  let contours = new cv.MatVector();
+  let hierarchy = new cv.Mat();
+  let resultPoints = null;
+  
+  // CLAHE (Contrast Limited Adaptive Histogram Equalization) helps handle shadows
+  let clahe = new cv.CLAHE(2.0, new cv.Size(8, 8));
+
+  try {
+    cv.cvtColor(srcMat, gray, cv.COLOR_RGBA2GRAY);
+    clahe.apply(gray, gray); // Enhance local contrast
+    cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
+
+    // Use lower thresholds for Canny to catch faint edges
+    cv.Canny(blurred, edges, 50, 150);
+
+    // Dilate to connect broken edge lines (crucial for documents on low-contrast backgrounds)
+    let kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
+    cv.dilate(edges, dilated, kernel, new cv.Point(-1, -1), 1);
+
+    cv.findContours(dilated, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+    let maxArea = 0;
+    for (let i = 0; i < contours.size(); ++i) {
+      let cnt = contours.get(i);
+      let area = cv.contourArea(cnt);
+      
+      if (area < (srcMat.rows * srcMat.cols) * 0.1) { cnt.delete(); continue; } // Ignore tiny objects
+
+      let approx = new cv.Mat();
+      let peri = cv.arcLength(cnt, true);
+      cv.approxPolyDP(cnt, approx, 0.02 * peri, true); // Check if it's a rectangle
+
+      if (approx.rows === 4 && area > maxArea) {
+        maxArea = area;
+        
+        // Extract the 4 points and sort them into top-left, top-right, etc.
+        let points = [];
+        for (let j = 0; j < 4; j++) {
+          points.push({ x: approx.data32S[j * 2], y: approx.data32S[j * 2 + 1] });
+        }
+        resultPoints = sortCorners(points);
+      }
+      approx.delete();
+      cnt.delete();
+    }
+  } catch (err) {
+    console.error("Fallback error:", err);
+  } finally {
+    // Always clean up OpenCV memory to prevent crashes
+    gray.delete(); blurred.delete(); edges.delete(); dilated.delete();
+    contours.delete(); hierarchy.delete(); clahe.delete();
+  }
+
+  return resultPoints;
+}
+
+// Helper to order points: Top-Left, Top-Right, Bottom-Right, Bottom-Left
+function sortCorners(pts) {
+  pts.sort((a, b) => a.y - b.y); // Sort by vertical position
+  let top = pts.slice(0, 2).sort((a, b) => a.x - b.x);
+  let bottom = pts.slice(2, 4).sort((a, b) => a.x - b.x);
+  return {
+    topLeftCorner: top[0],
+    topRightCorner: top[1],
+    bottomLeftCorner: bottom[0],
+    bottomRightCorner: bottom[1]
+  };
 }
 
 // ---------- UI & Thumbnails ----------
@@ -225,7 +324,7 @@ function canvasPoint(ev) {
 // ---------- High-Res PDF Generation ----------
 function handleDownload() {
   if (!pages.length || pages.some(p => !p.reliable)) return;
-  setStatus("Processing ultra-flat math & building PDF...");
+  setStatus("Applying ultra-flat math & building PDF...");
 
   setTimeout(() => {
     try {
@@ -233,7 +332,6 @@ function handleDownload() {
       let pdf = null;
 
       pages.forEach((page, idx) => {
-        // Force extraction at A4 300 DPI
         const resultCanvas = scanner.extractPaper(page.img, 2480, 3508, page.corners);
         if (!resultCanvas) return;
 
@@ -245,7 +343,6 @@ function handleDownload() {
 
         const pageWidth = pdf.internal.pageSize.getWidth();
         const pageHeight = pdf.internal.pageSize.getHeight();
-        // Placed at 0,0 with exact page dimensions to ensure zero margins
         pdf.addImage(dataUrl, "JPEG", 0, 0, pageWidth, pageHeight);
       });
 
@@ -278,15 +375,11 @@ function applyProFilter(sourceCanvas, mode) {
   const imageData = octx.getImageData(0, 0, w, h);
   const data = imageData.data;
   
-  // Calculate average brightness of the image to use as our baseline
   let totalLuma = 0;
   for (let i = 0; i < data.length; i += 4) {
     totalLuma += 0.299 * data[i] + 0.587 * data[i+1] + 0.114 * data[i+2];
   }
   const avgLuma = totalLuma / (data.length / 4);
-
-  // Determine the threshold. Anything below this becomes black, above becomes white.
-  // We set it aggressively high to wipe out shadows, but low enough to keep text.
   const threshold = avgLuma * 0.85;
 
   for (let i = 0; i < data.length; i += 4) {
@@ -294,34 +387,23 @@ function applyProFilter(sourceCanvas, mode) {
     let luma = 0.299 * r + 0.587 * g + 0.114 * b;
 
     if (mode === "flat") {
-      // --- ULTIMATE FLAT B&W (Defect removal) ---
-      // 1. If the pixel is darker than the threshold, make it pure black.
-      // 2. If it's lighter, make it pure white.
-      // This instantly removes paper texture, lighting gradients, and shadows.
       const isDark = luma < threshold;
       const v = isDark ? 0 : 255;
       data[i] = data[i+1] = data[i+2] = v;
 
     } else if (mode === "gray") {
-      // --- HIGH CONTRAST GRAYSCALE ---
-      // Normalize brightness relative to the average, then apply contrast curve
       let norm = (luma / (avgLuma * 0.95)) * 255;
-      norm = (norm - 128) * 1.3 + 128; // Stronger contrast
-      
+      norm = (norm - 128) * 1.3 + 128;
       const v = Math.min(255, Math.max(0, norm));
       data[i] = data[i+1] = data[i+2] = v;
 
     } else if (mode === "color") {
-      // --- VIVID COLOR ---
-      // Flatten shadows by dividing by the average luminance
       const norm = Math.min(255, (luma / (avgLuma * 0.85)) * 255);
       const scale = norm / (luma || 1);
-      
       r = r * scale; g = g * scale; b = b * scale;
 
-      // Boost saturation
       const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-      const satBoost = 1.4; // High boost for scanner look
+      const satBoost = 1.4;
       r = gray + (r - gray) * satBoost;
       g = gray + (g - gray) * satBoost;
       b = gray + (b - gray) * satBoost;
@@ -334,13 +416,10 @@ function applyProFilter(sourceCanvas, mode) {
 
   octx.putImageData(imageData, 0, 0);
 
-  // --- BORDER CLEANUP (Geometry Flattening) ---
-  // Even with perfect corners, a tiny 1-2px sliver of the desk can be captured.
-  // We draw a perfectly straight, razor-sharp black border around the canvas to hide it.
   if (mode !== "original") {
-    const borderSize = 4; // pixels
+    const borderSize = 4; 
     octx.strokeStyle = mode === "flat" ? "#000" : "#333";
-    octx.lineWidth = borderSize * 2; // Centered on the edge
+    octx.lineWidth = borderSize * 2; 
     octx.strokeRect(0, 0, w, h);
   }
 
