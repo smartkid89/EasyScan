@@ -3,7 +3,6 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self';
                  script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval' https://cdnjs.cloudflare.com https://docs.opencv.org https://cdn.jsdelivr.net;
@@ -11,93 +10,55 @@
                  img-src 'self' data: blob:;
                  connect-src 'self' data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net;
                  worker-src 'self' blob:;" />
-
   <title>JPG to Scanned PDF</title>
   <style>
-    body {
-      font-family: system-ui, sans-serif;
-      max-width: 860px;
-      margin: 40px auto;
-      padding: 0 16px;
-    }
+    body { font-family: system-ui, sans-serif; max-width: 860px; margin: 40px auto; padding: 0 16px; }
     h1 { font-size: 1.4rem; }
     label { display: block; margin: 16px 0 6px; font-weight: 600; }
-    input[type="file"], select, button {
-      padding: 8px 12px;
-      font-size: 1rem;
-      margin-top: 4px;
-    }
+    input[type="file"], select, button { padding: 8px 12px; font-size: 1rem; margin-top: 4px; }
     button { cursor: pointer; margin-top: 12px; }
     button:disabled { cursor: not-allowed; opacity: 0.5; }
     #status { margin-top: 12px; color: #555; font-size: 0.9rem; min-height: 1.2em; }
-    #thumbs {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 12px;
-      margin-top: 16px;
-    }
-    .thumb {
-      position: relative;
-      border: 2px solid #ccc;
-      border-radius: 6px;
-      padding: 4px;
-      background: #fafafa;
-      width: 150px;
-    }
+    #thumbs { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 16px; }
+    .thumb { position: relative; border: 2px solid #ccc; border-radius: 6px; padding: 4px; background: #fafafa; width: 150px; transition: border-color 0.2s; }
     .thumb.active { border-color: #008cff; }
+    .thumb.error { border-color: #e33; background: #fff0f0; }
     .thumb img { width: 100%; display: block; border-radius: 4px; }
-    .thumb .remove {
-      position: absolute;
-      top: -8px; right: -8px;
-      width: 22px; height: 22px;
-      border-radius: 50%;
-      border: none;
-      background: #e33;
-      color: #fff;
-      font-size: 14px;
-      line-height: 22px;
-      padding: 0;
-      cursor: pointer;
-    }
-    .thumb .caption { font-size: 0.75rem; text-align: center; margin-top: 4px; color: #444; }
-    #editorWrap {
-      display: none;
-      position: relative;
-      margin-top: 16px;
-    }
-    #editor {
-      max-width: 100%;
-      border: 1px solid #ccc;
-      cursor: crosshair;
-      touch-action: none;
-      display: block;
-    }
+    .thumb .remove { position: absolute; top: -8px; right: -8px; width: 22px; height: 22px; border-radius: 50%; border: none; background: #e33; color: #fff; font-size: 14px; line-height: 22px; padding: 0; cursor: pointer; }
+    .thumb .caption { font-size: 0.75rem; text-align: center; margin-top: 4px; color: #444; font-weight: bold; }
+    #editorWrap { display: none; position: relative; margin-top: 16px; background: #333; padding: 10px; border-radius: 8px; overflow: hidden; }
+    #editor { max-width: 100%; cursor: crosshair; touch-action: none; display: block; margin: 0 auto; }
     #controls { margin-top: 16px; }
+    #warning-banner { display: none; background: #fff0f0; color: #c00; padding: 12px; margin-top: 16px; border-radius: 6px; border: 1px solid #fcc; }
   </style>
 </head>
 <body>
-  <h1>JPG → Scanned PDF (multi-page)</h1>
+  <h1>Pro Document Scanner</h1>
 
-  <label for="upload">Choose one or more images</label>
+  <label for="upload">Choose images</label>
   <input type="file" id="upload" accept="image/jpeg,image/png" multiple />
 
   <div id="thumbs"></div>
+
+  <div id="warning-banner">
+    <strong>⚠️ Auto-detection failed on some pages!</strong><br/>
+    Click the red thumbnails and <strong>drag the 4 blue corners</strong> to the edges of the paper.
+  </div>
 
   <div id="editorWrap">
     <canvas id="editor"></canvas>
   </div>
 
   <div id="controls">
-    <label for="filter">Filter</label>
+    <label for="filter">Scan Quality</label>
     <select id="filter">
-      <option value="gray">Grayscale (recommended)</option>
-      <option value="bw">Black &amp; White</option>
-      <option value="color">Color (flattened)</option>
-      <option value="original">Original Color</option>
+      <option value="color" selected>Color Document (CamScanner Style)</option>
+      <option value="gray">Grayscale (Clean Text)</option>
+      <option value="bw">Black &amp; White (High Contrast)</option>
+      <option value="original">Original Photo</option>
     </select>
-
     <br />
-    <button id="download" disabled>Download multi-page PDF</button>
+    <button id="download" disabled>Download High-Res PDF</button>
   </div>
 
   <div id="status"></div>
