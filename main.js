@@ -96,14 +96,12 @@ function autoDetectCorners(img) {
     if (!pts || !pts.topLeftCorner) return { corners: full, reliable: false };
     const detected = { topLeftCorner: { ...pts.topLeftCorner }, topRightCorner: { ...pts.topRightCorner }, bottomLeftCorner: { ...pts.bottomLeftCorner }, bottomRightCorner: { ...pts.bottomRightCorner } };
 
-    // Quality Check
     const minX = Math.min(detected.topLeftCorner.x, detected.bottomLeftCorner.x);
     const maxX = Math.max(detected.topRightCorner.x, detected.bottomRightCorner.x);
     const minY = Math.min(detected.topLeftCorner.y, detected.topRightCorner.y);
     const maxY = Math.max(detected.bottomLeftCorner.y, detected.bottomRightCorner.y);
     const ratio = ((maxX - minX) * (maxY - minY)) / (img.width * img.height);
     
-    // Area must be between 35% and 98% of image to be considered reliable
     return { corners: detected, reliable: ratio > 0.35 && ratio < 0.98 };
   } catch (err) {
     return { corners: full, reliable: false };
@@ -227,29 +225,27 @@ function canvasPoint(ev) {
 // ---------- High-Res PDF Generation ----------
 function handleDownload() {
   if (!pages.length || pages.some(p => !p.reliable)) return;
-  setStatus("Processing image math & building PDF...");
+  setStatus("Processing ultra-flat math & building PDF...");
 
-  // Use setTimeout to let the UI update before heavy synchronous processing
   setTimeout(() => {
     try {
       const mode = filterSelect.value;
       let pdf = null;
 
       pages.forEach((page, idx) => {
-        // UPGRADE: Force extraction at exactly 2480 x 3508 pixels (A4 @ 300 DPI equivalent)
-        // This makes the PDF incredibly sharp.
+        // Force extraction at A4 300 DPI
         const resultCanvas = scanner.extractPaper(page.img, 2480, 3508, page.corners);
         if (!resultCanvas) return;
 
         const filtered = applyProFilter(resultCanvas, mode);
-        const dataUrl = filtered.toDataURL("image/jpeg", 0.95); // 0.95 JPEG quality
+        const dataUrl = filtered.toDataURL("image/jpeg", 0.95);
 
         if (!pdf) pdf = new jsPDF({ orientation: "portrait", unit: "px", format: "a4" });
         else pdf.addPage("a4", "portrait");
 
-        // The canvas is already A4 aspect ratio, so we just map it to the full page
         const pageWidth = pdf.internal.pageSize.getWidth();
         const pageHeight = pdf.internal.pageSize.getHeight();
+        // Placed at 0,0 with exact page dimensions to ensure zero margins
         pdf.addImage(dataUrl, "JPEG", 0, 0, pageWidth, pageHeight);
       });
 
@@ -258,7 +254,7 @@ function handleDownload() {
       const blob = pdf.output("blob");
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
-      a.href = url; a.download = "scanned-document.pdf";
+      a.href = url; a.download = "flattened-document.pdf";
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
       URL.revokeObjectURL(url);
       setStatus(`PDF downloaded (${pages.length} pages).`);
@@ -268,7 +264,7 @@ function handleDownload() {
   }, 50);
 }
 
-// ---------- PRO FILTERS (Adaptive Illumination & Contrast) ----------
+// ---------- ULTRA-FLAT PRO FILTERS ----------
 function applyProFilter(sourceCanvas, mode) {
   const w = sourceCanvas.width;
   const h = sourceCanvas.height;
@@ -282,31 +278,50 @@ function applyProFilter(sourceCanvas, mode) {
   const imageData = octx.getImageData(0, 0, w, h);
   const data = imageData.data;
   
-  // 1. Calculate global average luminance
+  // Calculate average brightness of the image to use as our baseline
   let totalLuma = 0;
   for (let i = 0; i < data.length; i += 4) {
     totalLuma += 0.299 * data[i] + 0.587 * data[i+1] + 0.114 * data[i+2];
   }
   const avgLuma = totalLuma / (data.length / 4);
 
-  // 2. Apply Math per pixel
+  // Determine the threshold. Anything below this becomes black, above becomes white.
+  // We set it aggressively high to wipe out shadows, but low enough to keep text.
+  const threshold = avgLuma * 0.85;
+
   for (let i = 0; i < data.length; i += 4) {
     let r = data[i], g = data[i+1], b = data[i+2];
     let luma = 0.299 * r + 0.587 * g + 0.114 * b;
 
-    if (mode === "color") {
-      // --- PRO COLOR SCANNER ---
-      // A. "Divide" by the average to flatten shadows across the page
-      // If a pixel is brighter than average, boost it to near white.
-      const norm = Math.min(255, (luma / (avgLuma * 0.85)) * 255);
+    if (mode === "flat") {
+      // --- ULTIMATE FLAT B&W (Defect removal) ---
+      // 1. If the pixel is darker than the threshold, make it pure black.
+      // 2. If it's lighter, make it pure white.
+      // This instantly removes paper texture, lighting gradients, and shadows.
+      const isDark = luma < threshold;
+      const v = isDark ? 0 : 255;
+      data[i] = data[i+1] = data[i+2] = v;
+
+    } else if (mode === "gray") {
+      // --- HIGH CONTRAST GRAYSCALE ---
+      // Normalize brightness relative to the average, then apply contrast curve
+      let norm = (luma / (avgLuma * 0.95)) * 255;
+      norm = (norm - 128) * 1.3 + 128; // Stronger contrast
       
-      // B. Scale colors to match the new luminance
+      const v = Math.min(255, Math.max(0, norm));
+      data[i] = data[i+1] = data[i+2] = v;
+
+    } else if (mode === "color") {
+      // --- VIVID COLOR ---
+      // Flatten shadows by dividing by the average luminance
+      const norm = Math.min(255, (luma / (avgLuma * 0.85)) * 255);
       const scale = norm / (luma || 1);
+      
       r = r * scale; g = g * scale; b = b * scale;
 
-      // C. Boost saturation so the text/logos don't look washed out
+      // Boost saturation
       const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-      const satBoost = 1.3;
+      const satBoost = 1.4; // High boost for scanner look
       r = gray + (r - gray) * satBoost;
       g = gray + (g - gray) * satBoost;
       b = gray + (b - gray) * satBoost;
@@ -314,27 +329,20 @@ function applyProFilter(sourceCanvas, mode) {
       data[i] = Math.min(255, Math.max(0, r));
       data[i+1] = Math.min(255, Math.max(0, g));
       data[i+2] = Math.min(255, Math.max(0, b));
-
-    } else if (mode === "gray") {
-      // --- PRO GRAYSCALE ---
-      // Smooth S-curve for contrast + shadow flattening
-      let norm = (luma / (avgLuma * 0.9)) * 255;
-      // Apply contrast curve
-      norm = (norm - 128) * 1.2 + 128;
-      
-      const v = Math.min(255, Math.max(0, norm));
-      data[i] = data[i+1] = data[i+2] = v;
-
-    } else if (mode === "bw") {
-      // --- PRO BLACK & WHITE (Adaptive Threshold) ---
-      // Instead of one global threshold, we threshold relative to the average
-      // If the pixel is significantly darker than the background, make it black.
-      const isText = luma < (avgLuma * 0.75);
-      const v = isText ? 0 : 255;
-      data[i] = data[i+1] = data[i+2] = v;
     }
   }
 
   octx.putImageData(imageData, 0, 0);
+
+  // --- BORDER CLEANUP (Geometry Flattening) ---
+  // Even with perfect corners, a tiny 1-2px sliver of the desk can be captured.
+  // We draw a perfectly straight, razor-sharp black border around the canvas to hide it.
+  if (mode !== "original") {
+    const borderSize = 4; // pixels
+    octx.strokeStyle = mode === "flat" ? "#000" : "#333";
+    octx.lineWidth = borderSize * 2; // Centered on the edge
+    octx.strokeRect(0, 0, w, h);
+  }
+
   return out;
 }
