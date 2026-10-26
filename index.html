@@ -10,7 +10,7 @@
                  img-src 'self' data: blob:;
                  connect-src 'self' data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net;
                  worker-src 'self' blob:;" />
-  <title>JPG to Scanned PDF</title>
+  <title>Pro Document Scanner</title>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 860px; margin: 40px auto; padding: 0 16px; }
     h1 { font-size: 1.4rem; }
@@ -33,7 +33,7 @@
   </style>
 </head>
 <body>
-  <h1>Pro Document Scanner</h1>
+  <h1>Ultra-Flat Document Scanner</h1>
 
   <label for="upload">Choose images</label>
   <input type="file" id="upload" accept="image/jpeg,image/png" multiple />
@@ -52,13 +52,13 @@
   <div id="controls">
     <label for="filter">Scan Quality</label>
     <select id="filter">
-      <option value="color" selected>Color Document (CamScanner Style)</option>
-      <option value="gray">Grayscale (Clean Text)</option>
-      <option value="bw">Black &amp; White (High Contrast)</option>
+      <option value="flat" selected>Ultra-Flat B&W (Perfect Edges)</option>
+      <option value="gray">High-Contrast Grayscale</option>
+      <option value="color">Vivid Color Document</option>
       <option value="original">Original Photo</option>
     </select>
     <br />
-    <button id="download" disabled>Download High-Res PDF</button>
+    <button id="download" disabled>Download Flattened PDF</button>
   </div>
 
   <div id="status"></div>
