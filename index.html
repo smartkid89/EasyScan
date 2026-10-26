@@ -1,16 +1,24 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+  <meta charset="UTF-8" />
   <title>JPG to Scanned PDF</title>
 </head>
 <body>
   <input type="file" id="upload" accept="image/jpeg,image/png" />
   <button id="download" disabled>Download PDF</button>
 
-  <!-- Load jsPDF from CDN -->
+  <!-- 1. jsPDF (keep from before) -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 
-  <!-- Your main.js as a module -->
+  <!-- 2. OpenCV.js (required by jscanify) -->
+  <!-- Note: async means it may load after jscanify's script tag -->
+  <script src="https://docs.opencv.org/4.7.0/opencv.js" async></script>
+
+  <!-- 3. jscanify -->
+  <script src="https://cdn.jsdelivr.net/gh/ColonelParrot/jscanify@master/src/jscanify.min.js"></script>
+
+  <!-- 4. Your code -->
   <script type="module" src="main.js"></script>
 </body>
 </html>
