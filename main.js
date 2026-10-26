@@ -88,7 +88,7 @@ function loadImage(src) {
   });
 }
 
-// ---------- Auto-detect corners (fixed: use cv.Mat) ----------
+// ---------- Auto-detect corners ----------
 function autoDetectCorners(img) {
   const full = {
     topLeftCorner:     { x: 0, y: 0 },
@@ -351,7 +351,7 @@ function handleDownload() {
   }
 }
 
-// ---------- Scan filter ----------
+// ---------- Scan filter (now includes "color") ----------
 function applyScanFilter(sourceCanvas, mode = "gray") {
   const w = sourceCanvas.width;
   const h = sourceCanvas.height;
@@ -368,20 +368,46 @@ function applyScanFilter(sourceCanvas, mode = "gray") {
   let totalLuma = 0;
 
   for (let i = 0; i < data.length; i += 4) {
+    totalLuma += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+  }
+  const avgLuma = totalLuma / (data.length / 4);
+
+  for (let i = 0; i < data.length; i += 4) {
     const r = data[i], g = data[i + 1], b = data[i + 2];
     const luma = 0.299 * r + 0.587 * g + 0.114 * b;
-    totalLuma += luma;
+
     if (mode === "gray") {
       const boosted = Math.min(255, Math.max(0, (luma - 128) * 1.4 + 128 + 30));
       data[i] = data[i + 1] = data[i + 2] = boosted;
+    } else if (mode === "color") {
+      const lift = 0.55;
+      const liftAmount = (255 - luma) * lift;
+
+      let nr = r + liftAmount;
+      let ng = g + liftAmount;
+      let nb = b + liftAmount;
+
+      const satBoost = 1.25;
+      const gray = 0.299 * nr + 0.587 * ng + 0.114 * nb;
+      nr = gray + (nr - gray) * satBoost;
+      ng = gray + (ng - gray) * satBoost;
+      nb = gray + (nb - gray) * satBoost;
+
+      const contrast = 1.15;
+      nr = (nr - 128) * contrast + 128;
+      ng = (ng - 128) * contrast + 128;
+      nb = (nb - 128) * contrast + 128;
+
+      data[i]     = Math.min(255, Math.max(0, nr));
+      data[i + 1] = Math.min(255, Math.max(0, ng));
+      data[i + 2] = Math.min(255, Math.max(0, nb));
     } else if (mode === "bw") {
       data[i] = data[i + 1] = data[i + 2] = luma;
     }
   }
 
   if (mode === "bw") {
-    const avg = totalLuma / (data.length / 4);
-    const threshold = Math.min(200, Math.max(120, avg * 0.95));
+    const threshold = Math.min(200, Math.max(120, avgLuma * 0.95));
     for (let i = 0; i < data.length; i += 4) {
       const v = data[i] > threshold ? 255 : 0;
       data[i] = data[i + 1] = data[i + 2] = v;
