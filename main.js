@@ -2,8 +2,7 @@ const { jsPDF } = window.jspdf;
 
 let scanner = null;
 
-// Each item: { id, img, corners, editorScale, active }
-const pages = [];
+const pages = [];       // { id, img, corners, editorScale }
 let activeId = null;
 let dragging = null;
 
@@ -53,11 +52,8 @@ async function handleUpload(e) {
       const dataUrl = await readFileAsDataURL(file);
       const img = await loadImage(dataUrl);
       const id = Date.now() + "-" + Math.random().toString(36).slice(2, 8);
-
-      // Auto-detect corners
       const corners = autoDetectCorners(img);
-
-      pages.push({ id, img, corners, active: false });
+      pages.push({ id, img, corners, editorScale: 1 });
     } catch (err) {
       console.error("Failed to load", file.name, err);
     }
@@ -65,14 +61,13 @@ async function handleUpload(e) {
 
   renderThumbs();
 
-  // Activate the last added page
   if (pages.length) {
     activatePage(pages[pages.length - 1].id);
   }
 
   downloadBtn.disabled = pages.length === 0;
   setStatus(`${pages.length} page(s) loaded. Click a thumbnail to edit its corners.`);
-  uploadInput.value = ""; // allow re-uploading the same files
+  uploadInput.value = "";
 }
 
 function readFileAsDataURL(file) {
@@ -93,9 +88,8 @@ function loadImage(src) {
   });
 }
 
-// ---------- Auto-detect corners ----------
+// ---------- Auto-detect corners (fixed: use cv.Mat) ----------
 function autoDetectCorners(img) {
-  // Default: full image
   const full = {
     topLeftCorner:     { x: 0, y: 0 },
     topRightCorner:    { x: img.width, y: 0 },
@@ -104,10 +98,19 @@ function autoDetectCorners(img) {
   };
 
   try {
-    const contour = scanner.findPaperContour(img);
-    if (!contour) return full;
+    if (typeof cv === "undefined") return full;
 
-    const pts = scanner.getCornerPoints(contour);
+    const mat = cv.imread(img);   // HTMLImageElement → cv.Mat
+    let contour = null;
+    let pts = null;
+    try {
+      contour = scanner.findPaperContour(mat);
+      if (contour) pts = scanner.getCornerPoints(contour);
+    } finally {
+      mat.delete();
+      if (contour && contour.delete) contour.delete();
+    }
+
     if (!pts || !pts.topLeftCorner) return full;
 
     return {
@@ -124,12 +127,15 @@ function autoDetectCorners(img) {
 
 // ---------- Thumbnails ----------
 function renderThumbs() {
+  if (!thumbsEl) {
+    console.warn("#thumbs element not found in HTML.");
+    return;
+  }
   thumbsEl.innerHTML = "";
 
   pages.forEach((page, idx) => {
     const div = document.createElement("div");
     div.className = "thumb" + (page.id === activeId ? " active" : "");
-    div.dataset.id = page.id;
 
     const imgEl = document.createElement("img");
     imgEl.src = page.img.src;
@@ -163,12 +169,11 @@ function activatePage(id) {
     return;
   }
 
-  // Draw into editor at reasonable size
   const maxW = 900;
   const scale = Math.min(1, maxW / page.img.width);
   editor.width = Math.round(page.img.width * scale);
   editor.height = Math.round(page.img.height * scale);
-  page.editorScale = scale; // editor pixels per source pixel
+  page.editorScale = scale;
 
   editorWrap.style.display = "block";
 
@@ -258,11 +263,10 @@ function onPointerMove(ev) {
   const p = canvasPoint(ev);
   const s = page.editorScale;
 
-  // Convert editor coords back to source image coords
-  const srcX = Math.max(0, Math.min(page.img.width,  p.x / s));
-  const srcY = Math.max(0, Math.min(page.img.height, p.y / s));
-
-  page.corners[dragging] = { x: srcX, y: srcY };
+  page.corners[dragging] = {
+    x: Math.max(0, Math.min(page.img.width,  p.x / s)),
+    y: Math.max(0, Math.min(page.img.height, p.y / s)),
+  };
   drawEditor();
 }
 
